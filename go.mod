@@ -1,4 +1,4 @@
-module github.com/rillig/gobco
+module github.com/edv1n/gobco
 
 go 1.16
 
