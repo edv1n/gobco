@@ -329,6 +329,10 @@ func (i *instrumenter) instrumentTestMain(astFile *ast.File) {
 }
 
 func (i *instrumenter) writeGobcoFiles(tmpDir string, pkgname string) {
+	if strings.HasSuffix(pkgname, "_test") {
+		pkgname = pkgname[:len(pkgname)-5]
+	}
+
 	fixPkgname := func(str string) []byte {
 		return []byte(strings.Replace(str, "package main\n", "package "+pkgname+"\n", 1))
 	}
