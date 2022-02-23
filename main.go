@@ -304,7 +304,7 @@ func (g *gobco) printOutput() {
 	}
 
 	g.outf("")
-	g.outf("Overall branch coverage: %.2f%% (%d/%d)", float64(cnt)/float64(len(conds)*2), cnt, len(conds)*2)
+	g.outf("Overall branch coverage: %.2f%% (%d/%d)", float64(cnt)/float64(len(conds)*2)*100, cnt, len(conds)*2)
 
 	g.outf("")
 	g.outf("Per function coverage:")
