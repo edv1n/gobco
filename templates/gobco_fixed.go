@@ -122,6 +122,7 @@ type gobcoCond struct {
 	Code       string
 	TrueCount  int
 	FalseCount int
+	Func       string
 }
 
 // gobcoCover is a separate function to keep the code generation small and simple.

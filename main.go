@@ -278,18 +278,42 @@ func (g *gobco) runGoTest() {
 func (g *gobco) printOutput() {
 	conds := g.load(g.statsFilename)
 
+	funcCondsCount := map[string]int{}
+	funcReachedCount := map[string]int{}
 	cnt := 0
 	for _, c := range conds {
+		funcName := c.Func
+
+		if _, ok := funcCondsCount[funcName]; !ok {
+			funcCondsCount[funcName] = 0
+		}
+		funcCondsCount[funcName]++
+
+		if _, ok := funcReachedCount[funcName]; !ok {
+			funcReachedCount[funcName] = 0
+		}
+
 		if c.TrueCount > 0 {
 			cnt++
+			funcReachedCount[funcName]++
 		}
 		if c.FalseCount > 0 {
 			cnt++
+			funcReachedCount[funcName]++
 		}
 	}
 
 	g.outf("")
-	g.outf("Branch coverage: %d/%d", cnt, len(conds)*2)
+	g.outf("Overall branch coverage: %.2f%% (%d/%d)", float64(cnt)/float64(len(conds)*2), cnt, len(conds)*2)
+
+	g.outf("")
+	g.outf("Per function coverage:")
+	for k, v := range funcCondsCount {
+		g.outf("%s %.2f%% (%d/%d)", k, (float64(funcReachedCount[k])/(float64(v)*2))*100, funcReachedCount[k], v*2)
+	}
+
+	g.outf("")
+	g.outf("Improvements can be done:")
 
 	for _, cond := range conds {
 		g.printCond(cond)
@@ -559,4 +583,5 @@ type condition struct {
 	Code       string
 	TrueCount  int
 	FalseCount int
+	Func       string
 }

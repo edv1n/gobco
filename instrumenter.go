@@ -20,8 +20,9 @@ import (
 // cond is a condition that appears somewhere in the source code.
 type cond struct {
 	// TODO: Maybe split this field into three.
-	start string // human-readable position in the file, e.g. "main.go:17:13"
-	code  string // the source code of the condition
+	start    string // human-readable position in the file, e.g. "main.go:17:13"
+	code     string // the source code of the condition
+	funcName string
 }
 
 // instrumenter rewrites the code of a go package (in a temporary directory),
@@ -40,19 +41,19 @@ type instrumenter struct {
 
 // addCond remembers a condition and returns its internal ID, which is then
 // used as an argument to the gobcoCover function.
-func (i *instrumenter) addCond(start, code string) int {
-	i.conds = append(i.conds, cond{start, code})
+func (i *instrumenter) addCond(start, code, funcName string) int {
+	i.conds = append(i.conds, cond{start, code, funcName})
 	return len(i.conds) - 1
 }
 
 // wrap returns the given expression surrounded by a function call to
 // gobcoCover and remembers the location and text of the expression,
 // for later generating the table of coverage points.
-func (i *instrumenter) wrap(cond ast.Expr) ast.Expr {
+func (i *instrumenter) wrap(cond ast.Expr, funcName string) ast.Expr {
 	if _, ok := cond.(*ast.UnaryExpr); ok {
 		return cond
 	}
-	return i.wrapText(cond, cond, i.str(cond))
+	return i.wrapText(cond, cond, i.str(cond), funcName)
 }
 
 // wrap returns the expression cond surrounded by a function call to
@@ -62,14 +63,14 @@ func (i *instrumenter) wrap(cond ast.Expr) ast.Expr {
 // The expression orig is the one from the actual code, and in case of
 // switch statements may differ from cond, which is the expression to
 // wrap.
-func (i *instrumenter) wrapText(cond, orig ast.Expr, code string) ast.Expr {
+func (i *instrumenter) wrapText(cond, orig ast.Expr, code string, funcName string) ast.Expr {
 	origStart := i.fset.Position(orig.Pos())
 	if orig.Pos().IsValid() && !strings.HasSuffix(origStart.Filename, ".go") {
 		return cond // don't wrap generated code, such as yacc parsers
 	}
 
 	start := i.fset.Position(orig.Pos())
-	idx := i.addCond(start.String(), code)
+	idx := i.addCond(start.String(), code, funcName)
 
 	return &ast.CallExpr{
 		Fun: ast.NewIdent("gobcoCover"),
@@ -78,11 +79,11 @@ func (i *instrumenter) wrapText(cond, orig ast.Expr, code string) ast.Expr {
 			cond}}
 }
 
-func (i *instrumenter) visitSwitch(n *ast.SwitchStmt) {
+func (i *instrumenter) visitSwitch(n *ast.SwitchStmt, funcName string) {
 	tag := n.Tag
 	if tag == nil {
 		for _, body := range n.Body.List {
-			i.visitExprs(body.(*ast.CaseClause).List)
+			i.visitExprs(body.(*ast.CaseClause).List, funcName)
 		}
 		return
 	}
@@ -116,7 +117,7 @@ func (i *instrumenter) visitSwitch(n *ast.SwitchStmt) {
 		for j, expr := range clause.List {
 			eq := ast.BinaryExpr{X: varname, Op: token.EQL, Y: expr}
 			eqlStr := i.strEql(tag, expr)
-			clause.List[j] = i.wrapText(&eq, expr, eqlStr)
+			clause.List[j] = i.wrapText(&eq, expr, eqlStr, funcName)
 		}
 	}
 }
@@ -124,47 +125,73 @@ func (i *instrumenter) visitSwitch(n *ast.SwitchStmt) {
 // visit wraps the nodes of an AST to be instrumented by the coverage.
 func (i *instrumenter) visit(n ast.Node) bool {
 	switch n := n.(type) {
-
-	case *ast.IfStmt:
-		n.Cond = i.wrap(n.Cond)
-
-	case *ast.ForStmt:
-		if n.Cond != nil {
-			n.Cond = i.wrap(n.Cond)
+	case *ast.FuncDecl:
+		funcName := "!UNKNOWN_FUNC!"
+		if n.Name != nil && n.Name.Name != "" {
+			funcName = n.Name.Name
 		}
 
-	case *ast.BinaryExpr:
-		if n.Op == token.LAND || n.Op == token.LOR {
-			n.X = i.wrap(n.X)
-			n.Y = i.wrap(n.Y)
-		}
-		// See also instrumenter.visitExprs.
-
-	case *ast.UnaryExpr:
-		if n.Op == token.NOT {
-			n.X = i.wrap(n.X)
-		}
-
-	case *ast.CallExpr:
-		if ident, ok := n.Fun.(*ast.Ident); !ok || ident.Name != "gobcoCover" {
-			i.visitExprs(n.Args)
+		if n.Recv != nil && n.Recv.List != nil {
+			switch v := n.Recv.List[0].Type.(type) {
+			case (*ast.StarExpr):
+				switch v := v.X.(type) {
+				case *ast.Ident:
+					funcName = fmt.Sprintf("(*%s).%s", v.Name, funcName)
+				}
+			case *ast.Ident:
+				funcName = fmt.Sprintf("(%s).%s", v.Name, funcName)
+			}
 		}
 
-	case *ast.ReturnStmt:
-		i.visitExprs(n.Results)
+		ast.Inspect(n, func(n ast.Node) bool {
+			switch n := n.(type) {
 
-	case *ast.AssignStmt:
-		i.visitExprs(n.Lhs)
-		i.visitExprs(n.Rhs)
+			case *ast.IfStmt:
+				n.Cond = i.wrap(n.Cond, funcName)
 
-	case *ast.SwitchStmt:
-		i.visitSwitch(n)
+			case *ast.ForStmt:
+				if n.Cond != nil {
+					n.Cond = i.wrap(n.Cond, funcName)
+				}
 
-	case *ast.TypeSwitchStmt:
-		// TODO
+			case *ast.BinaryExpr:
+				if n.Op == token.LAND || n.Op == token.LOR {
+					n.X = i.wrap(n.X, funcName)
+					n.Y = i.wrap(n.Y, funcName)
+				}
+				// See also instrumenter.visitExprs.
 
-	case *ast.SelectStmt:
-		// Note: select statements are already handled by go cover.
+			case *ast.UnaryExpr:
+				if n.Op == token.NOT {
+					n.X = i.wrap(n.X, funcName)
+				}
+
+			case *ast.CallExpr:
+				if ident, ok := n.Fun.(*ast.Ident); !ok || ident.Name != "gobcoCover" {
+					i.visitExprs(n.Args, funcName)
+				}
+
+			case *ast.ReturnStmt:
+				i.visitExprs(n.Results, funcName)
+
+			case *ast.AssignStmt:
+				i.visitExprs(n.Lhs, funcName)
+				i.visitExprs(n.Rhs, funcName)
+
+			case *ast.SwitchStmt:
+				i.visitSwitch(n, funcName)
+
+			case *ast.TypeSwitchStmt:
+				// TODO
+
+			case *ast.SelectStmt:
+				// Note: select statements are already handled by go cover.
+			}
+
+			return true
+		})
+
+		return false
 	}
 
 	return true
@@ -206,23 +233,23 @@ func (i *instrumenter) strEql(lhs ast.Expr, rhs ast.Expr) string {
 }
 
 // visitExprs wraps the given expression list for coverage.
-func (i *instrumenter) visitExprs(exprs []ast.Expr) {
+func (i *instrumenter) visitExprs(exprs []ast.Expr, funcName string) {
 	for idx := range exprs {
-		i.visitExpr(&exprs[idx])
+		i.visitExpr(&exprs[idx], funcName)
 	}
 }
 
 // visitExpr wraps comparison expressions in a call to gobcoCover, thereby
 // counting how often these expressions are evaluated.
-func (i *instrumenter) visitExpr(exprPtr *ast.Expr) {
+func (i *instrumenter) visitExpr(exprPtr *ast.Expr, funcName string) {
 	switch expr := (*exprPtr).(type) {
 	// FIXME: What about the other types of expression?
 	case *ast.BinaryExpr:
 		if expr.Op.Precedence() == token.EQL.Precedence() {
-			*exprPtr = i.wrap(expr)
+			*exprPtr = i.wrap(expr, funcName)
 		}
 	case *ast.IndexExpr:
-		i.visitExpr(&expr.Index)
+		i.visitExpr(&expr.Index, funcName)
 	}
 }
 
@@ -358,7 +385,7 @@ func (i *instrumenter) writeGobcoGo(filename, pkgname string) {
 	_, _ = fmt.Fprintln(&sb, "var gobcoCounts = gobcoStats{")
 	_, _ = fmt.Fprintln(&sb, "\tconds: []gobcoCond{")
 	for _, cond := range i.conds {
-		_, _ = fmt.Fprintf(&sb, "\t\t{%q, %q, 0, 0},\n", cond.start, cond.code)
+		_, _ = fmt.Fprintf(&sb, "\t\t{%q, %q, 0, 0, %q},\n", cond.start, cond.code, cond.funcName)
 	}
 	_, _ = fmt.Fprintln(&sb, "\t},")
 	_, _ = fmt.Fprintln(&sb, "}")
